@@ -61,6 +61,8 @@ namespace Terminal.Gui {
 
 		internal SortedList<long, Timeout> timeouts = new SortedList<long, Timeout> ();
 		object timeoutsLockToken = new object ();
+
+		object idleHandlersLock = new object ();
 		internal List<Func<bool>> idleHandlers = new List<Func<bool>> ();
 
 		/// <summary>
@@ -123,7 +125,7 @@ namespace Terminal.Gui {
 		/// <param name="idleHandler">Token that can be used to remove the idle handler with <see cref="RemoveIdle(Func{bool})"/> .</param>
 		public Func<bool> AddIdle (Func<bool> idleHandler)
 		{
-			lock (idleHandlers) {
+			lock (idleHandlersLock) {
 				idleHandlers.Add (idleHandler);
 			}
 
@@ -139,7 +141,7 @@ namespace Terminal.Gui {
 		///  This method also returns <c>false</c> if the idle handler is not found.
 		public bool RemoveIdle (Func<bool> token)
 		{
-			lock (token)
+			lock (idleHandlersLock)
 				return idleHandlers.Remove (token);
 		}
 
@@ -242,14 +244,18 @@ namespace Terminal.Gui {
 		void RunIdle ()
 		{
 			List<Func<bool>> iterate;
-			lock (idleHandlers) {
+			lock (idleHandlersLock) {
 				iterate = idleHandlers;
+				// I believe this here is the crux of the bug that using idleHandlersLock fixes.
+				// Because idleHandlers isn't volatile it's possible for another thead to
+				// add a handler (say an async/await continuation) onto the previous idleHandlers
+				// This is lost and the await will never be resumed
 				idleHandlers = new List<Func<bool>> ();
 			}
 
 			foreach (var idle in iterate) {
 				if (idle ())
-					lock (idleHandlers)
+					lock (idleHandlersLock)
 						idleHandlers.Add (idle);
 			}
 		}
@@ -294,7 +300,7 @@ namespace Terminal.Gui {
 
 			Driver.MainIteration ();
 
-			lock (idleHandlers) {
+			lock (idleHandlersLock) {
 				if (idleHandlers.Count > 0)
 					RunIdle ();
 			}
